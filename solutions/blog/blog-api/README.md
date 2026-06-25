@@ -92,6 +92,33 @@ Day 20 留了个伏笔——所有 Repository 方法都返回 `Promise`，Servic
 
 详细讲解见 [Day 34 README](../../../days/day-34/)。
 
+## Day 36 更新：Redis 缓存（Cache-Aside）
+
+给读得最猛的接口加一层 Redis 缓存，把数据库挡在后面。**只接 Cache-Aside（旁路缓存）一种策略**——它是「缓存可随时消失」的：Redis 整个宕机，API 照常工作，只是退回直连数据库变慢一点。这条「优雅降级」是整个缓存层的设计主轴：
+
+- 新增 `src/cache/`：`RedisService`（包 `ioredis`，每条命令 `try/catch`，出错当未命中、绝不抛 500；`error` 事件必须接否则进程崩；`maxRetriesPerRequest: 1` + `enableOfflineQueue: false` 快失败）+ 全局 `CacheModule`
+- `PostsService` 的 `findOne` / `findAll` 走 Cache-Aside（查缓存 → miss 查库 → `SET EX` 回填）；`create` / `update` / `remove` 写后失效（单篇 `DEL` + 列表按前缀 `SCAN` 清）；`incrementView` 故意不失效（`viewCount` 容忍 TTL 内陈旧，换 `findOne` 的缓存不被浏览量刷废）
+- **击穿守卫** `coalesce`：同一 key 的并发未命中共享一次 DB 查询（单进程内有效，多实例要换 Redis 分布式锁）
+- **可观测**：`X-Cache: HIT|MISS|BYPASS` + `X-Cache-Key` 响应头。命中状态产生于单例 service、要写到每请求的响应头——用 `AsyncLocalStorage`（CLS）穿透（`src/common/request-context.ts` + 中间件 + `cache-header.interceptor.ts`）
+- **不缓存** `search` / `feed`：高基数 + 强时效，缓存命中率趋近 0
+- 配置加 `REDIS_URL`（默认 localhost，连不上不阻塞启动）+ `POST_CACHE_TTL` / `LIST_CACHE_TTL`；`solutions/blog/blog-db/docker-compose.yml` 加了 `redis` 服务（关持久化）
+- 新增 `test/cache.e2e.test.ts`：命中 / 更新失效 / 删除失效 / 列表失效 / 负结果五组用例（Redis 没起则 skip）
+- 新增 `test/api.e2e.test.ts`：端到端「接口联调」，把认证 / CRUD / 缓存 / 分页搜索 / 乐观锁 / RBAC / Token 轮换 / 优雅降级串成一条用户旅程逐段断言（含「停 Redis 仍 200 + X-Cache=BYPASS」的降级用例，无 docker 时自动 skip）
+
+详细讲解见 [Day 36 README](../../../days/day-36/)。
+
+## Day 37 更新：Redis 进阶（排行榜 + 分布式锁 + 缓存三坑）
+
+在 Day 36 的缓存基础上，把「留到以后」的几件事兑现，并加两个 Redis 招牌用法：
+
+- 新增 `src/cache/redis-lock.service.ts`：分布式锁（`SET NX EX` 抢锁 + Lua 脚本安全释放 + `withLock` 包装）。`RedisService` 补 `setNx` / `eval` / ZSET 命令（`zincrby`、`zrem`、`zrevrangeWithScores`）
+- 新增 `src/posts/trending.service.ts`：Sorted Set 排行榜。浏览时 `ZINCRBY` 加分、删除时 `ZREM` 摘榜；新增 `GET /posts/trending`（ZSET 取 Top N，不可用时回退 DB `ORDER BY view_count`）；仓储加 `findTopByViewCount` 兜底
+- 缓存三坑对策落到 `PostsService.findOne`：**击穿** = 进程内 `coalesce` + 跨进程分布式锁（带双重检查）；**穿透** = 负缓存（404 写短 TTL 哨兵）；**雪崩** = TTL 随机抖动（`jitteredTtl`）
+- config 加 `CACHE_TTL_JITTER` / `NEGATIVE_CACHE_TTL` / `LOCK_TTL`
+- 新增 `test/redis-advanced.e2e.test.ts`：排行榜排序 / DB 兜底 / 锁互斥+安全释放 / 负缓存
+
+详细讲解见 [Day 37 README](../../../days/day-37/)。
+
 ## 涵盖今日产出
 
 - [x] 目录按 `common / config / feature / health` 重组

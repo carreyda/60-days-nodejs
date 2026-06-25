@@ -41,6 +41,15 @@ export interface PostsRepository {
   // Day 29 —— 浏览计数原子自增（可交换操作，无需乐观锁 / 行锁）。返回 null = 记录不存在。
   incrementViewCount(id: string): Promise<Post | null>;
 
+  // Day 37 —— 按浏览数从高到低取 Top N（published）。
+  // 排行榜的「数据库兜底」：Redis ZSET 不可用 / 榜空时，用这条 SQL 顶上。
+  findTopByViewCount(limit: number): Promise<Post[]>;
+
+  // Day 39 —— 设置 / 清除封面图 URL。只改 meta.coverImage：不 bump version、不写修订
+  // （封面不是内容变更，不该出现在修订历史里）。coverUrl=null 表示清除。
+  // 返回 null = 记录不存在。
+  setCoverImage(postId: string, coverUrl: string | null): Promise<Post | null>;
+
   // Day 29 —— 列出某篇文章的修订历史（新 → 旧）。
   listRevisions(postId: string): Promise<PostRevision[]>;
 
